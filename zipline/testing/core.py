@@ -1555,10 +1555,6 @@ class RecordBatchBlotter(Blotter):
         return super(RecordBatchBlotter, self).batch_order(*args, **kwargs)
 
 
-####################################
-# Shared factors for pipeline tests.
-####################################
-
 class AssetID(CustomFactor):
     """
     CustomFactor that returns the AssetID of each asset.
@@ -1587,3 +1583,123 @@ class OpenPrice(CustomFactor):
 
     def compute(self, today, assets, out, open):
         out[:] = open
+
+
+def prices_generating_returns(returns, starting_price):
+    """Construct the time series of prices that produce the given returns.
+
+    Parameters
+    ----------
+    returns : np.ndarray[float]
+        The returns that these prices generate.
+    starting_price : float
+        The value of the asset.
+
+    Returns
+    -------
+    prices : np.ndaray[float]
+        The prices that generate the given returns. This array will be one
+        element longer than ``returns`` and ``prices[0] == starting_price``.
+    """
+    raw_prices = starting_price * (1 + np.append([0], returns)).cumprod()
+    rounded_prices = raw_prices.round(3)
+
+    if not np.allclose(raw_prices, rounded_prices):
+        raise ValueError(
+            'Prices only have 3 decimal places of precision. There is no valid'
+            ' price series that generate these returns.',
+        )
+
+    return rounded_prices
+
+
+def simulate_minutes_for_day(open_,
+                             high,
+                             low,
+                             close,
+                             volume,
+                             trading_minutes=390,
+                             random_state=None):
+    """Generate a random walk of minute returns which meets the given OHLCV
+    profile for an asset. The volume will be evenly distributed through the
+    day.
+
+    Parameters
+    ----------
+    open_ : float
+        The day's open.
+    high : float
+        The day's high.
+    low : float
+        The day's low.
+    close : float
+        The day's close.
+    volume : float
+        The day's volume.
+    trading_minutes : int, optional
+        The number of minutes to simulate.
+    random_state : numpy.random.RandomState, optional
+        The random state to use. If not provided, the global numpy state is
+        used.
+    """
+    if random_state is None:
+        random_state = np.random
+
+    sub_periods = 5
+
+    values = (random_state.rand(trading_minutes * sub_periods) - 0.5).cumsum()
+    values *= (high - low) / (values.max() - values.min())
+    values += np.linspace(
+        open_ - values[0],
+        close - values[-1],
+        len(values),
+    )
+    assert np.allclose(open_, values[0])
+    assert np.allclose(close, values[-1])
+
+    max_ = max(close, open_)
+    where = values > max_
+    values[where] = (
+        (values[where] - max_) *
+        (high - max_) /
+        (values.max() - max_) +
+        max_
+    )
+
+    min_ = min(close, open_)
+    where = values < min_
+    values[where] = (
+        (values[where] - min_) *
+        (low - min_) /
+        (values.min() - min_) +
+        min_
+    )
+
+    if not (np.allclose(values.max(), high) and
+            np.allclose(values.min(), low)):
+        return simulate_minutes_for_day(
+            open_,
+            high,
+            low,
+            close,
+            volume,
+            trading_minutes,
+            random_state=random_state,
+        )
+
+    prices = pd.Series(values.round(3)).groupby(
+        np.arange(trading_minutes).repeat(sub_periods),
+    )
+
+    base_volume, remainder = divmod(volume, trading_minutes)
+    volume = np.full(trading_minutes, base_volume, dtype='int64')
+    volume[:remainder] += 1
+
+    # TODO: add in volume
+    return pd.DataFrame({
+        'open': prices.first(),
+        'close': prices.last(),
+        'high': prices.max(),
+        'low': prices.min(),
+        'volume': volume,
+    })

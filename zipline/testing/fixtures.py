@@ -1,6 +1,7 @@
 import os
 import sqlite3
 from unittest import TestCase
+import warnings
 
 from contextlib2 import ExitStack
 from logbook import NullHandler, Logger
@@ -1834,3 +1835,12 @@ class WithMakeAlgo(WithSimParams,
         Create and run an TradingAlgorithm in memory.
         """
         return self.make_algo(**overrides).run()
+
+
+class WithWerror(object):
+    @classmethod
+    def init_class_fixtures(cls):
+        cls.enter_class_context(warnings.catch_warnings())
+        warnings.simplefilter('error')
+
+        super(WithWerror, cls).init_class_fixtures()
